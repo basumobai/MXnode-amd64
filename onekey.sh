@@ -17,9 +17,9 @@ fi
 # onekey.sh - proxy-node 一键安装 & 管理脚本
 # 和 install.sh 共存，默认不开 WARP、不配置 Brutal
 # 首次运行: 交互生成配置 → 启动服务 → 注册 mnode 命令
-# 再次运行: 更新同目录下的 proxy-node 二进制并重启
+# 再次运行: 更新同目录下的 proxy-node 二进制并保持原启停状态
 # 输入 mnode: 查看日志、启停、卸载、重新生成配置
-# PROXY_NODE_POST_INSTALL_STATE=keep|start|stop 控制安装或更新后的运行状态，默认 start。
+# PROXY_NODE_POST_INSTALL_STATE=keep|start|stop；首装默认 start，更新默认 keep。
 set -euo pipefail
 
 ##############################################################################
@@ -61,6 +61,7 @@ is_openbsd() { [[ "$(uname -s)" == "OpenBSD" ]]; }
 is_root() { [[ $EUID -eq 0 ]]; }
 
 service_installed() {
+  [[ -f "${CONFIG_FILE}" ]] || \
   [[ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]] || \
   [[ -f "/etc/init.d/${SERVICE_NAME}" ]] || \
   [[ -f "${FREEBSD_RC_SCRIPT}" ]] || \
@@ -68,6 +69,22 @@ service_installed() {
   [[ -f "${OPENBSD_LEGACY_RC_SCRIPT}" ]] || \
   [[ -f "/etc/supervisor/conf.d/${SERVICE_NAME}.conf" ]] || \
   [[ -f "/etc/supervisord.d/${SERVICE_NAME}.conf" ]]
+}
+
+check_binary_arch() {
+  local src_binary="$1" header expected
+  [[ -f "$src_binary" ]] || error "找不到 ${BINARY_NAME}，请把它和本脚本放在同一目录"
+  # 当前仓库的下载包为 Linux ELF；停止旧服务前检查 CPU 架构。
+  if is_linux; then
+    case "$(uname -m)" in
+      x86_64|amd64) expected=3e00 ;;
+      aarch64|arm64) expected=b700 ;;
+      *) error "当前安装包不支持 CPU 架构: $(uname -m)" ;;
+    esac
+    header="$(od -An -tx1 -N20 "$src_binary" | tr -d '[:space:]')"
+    [[ "${header:0:14}" == "7f454c46020101" && "${header:36:4}" == "$expected" ]] ||
+      error "proxy-node 不是当前 CPU 架构的 Linux 64 位二进制，已停止安装/更新"
+  fi
 }
 
 service_running() {
@@ -562,7 +579,9 @@ CFGEOF
 ##############################################################################
 register_mnode() {
   # 复制自身到安装目录作为 mnode
-  cp "$0" "$MNODE_PATH"
+  if [[ ! "$0" -ef "$MNODE_PATH" ]]; then
+    cp "$0" "$MNODE_PATH"
+  fi
   chmod +x "$MNODE_PATH"
   info "mnode → ${MNODE_PATH}"
 
@@ -716,12 +735,11 @@ do_install() {
   echo -e "${GREEN}  proxy-node 一键安装${NC}"
   echo -e "${GREEN}============================================================${NC}"
 
-  # 创建安装目录
-  mkdir -p "$INSTALL_DIR"
-
   # 二进制
   local src_binary
   src_binary="$(cd "$(dirname "$0")" && pwd)/${BINARY_NAME}"
+  check_binary_arch "$src_binary"
+  mkdir -p "$INSTALL_DIR"
   if [[ -f "$src_binary" ]]; then
     install -m755 "$src_binary" "$BINARY_PATH"
     info "安装 proxy-node → ${BINARY_PATH}"
@@ -806,6 +824,9 @@ do_update() {
     echo "  如需管理，请直接输入: mnode"
     exit 0
   fi
+  check_binary_arch "$src_binary"
+  # 更新默认保留状态；首装仍默认为 start。
+  POST_INSTALL_STATE="${PROXY_NODE_POST_INSTALL_STATE:-keep}"
 
   echo ""
   echo -e "${GREEN}=== proxy-node 更新 ===${NC}"
@@ -815,19 +836,31 @@ do_update() {
     was_running=1
   fi
 
+  # 先准备完整新文件和旧二进制备份，再停止服务并在同一文件系统内切换。
+  # 不修改 config.json、node_config.defaults.json、证书或其他现有文件。
+  local staged_binary
+  staged_binary="$(mktemp "${INSTALL_DIR}/.proxy-node.XXXXXXXX")"
+  if ! install -m755 "$src_binary" "$staged_binary"; then
+    rm -f "$staged_binary"
+    error "新二进制准备失败，原服务保持不变"
+  fi
+  if [[ -f "$BINARY_PATH" ]] && ! cp -p "$BINARY_PATH" "${BINARY_PATH}.bak"; then
+    rm -f "$staged_binary"
+    error "旧二进制备份失败，原服务保持不变"
+  fi
   stop_service
-  install -m755 "$src_binary" "$BINARY_PATH"
+  if service_running; then
+    rm -f "$staged_binary"
+    error "旧服务未能停止，已取消二进制替换"
+  fi
+  if ! mv -f "$staged_binary" "$BINARY_PATH"; then
+    rm -f "$staged_binary"
+    if [[ "$was_running" -eq 1 ]]; then start_service; fi
+    error "二进制替换失败，保留旧版本"
+  fi
   info "已更新 proxy-node → ${BINARY_PATH}"
 
-  # 同步更新 mnode（避免自己复制到自己）
-  local self_real mn_real
-  self_real="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-  mn_real="$(cd "$(dirname "$MNODE_PATH")" && pwd)/$(basename "$MNODE_PATH")"
-  if [[ "$self_real" != "$mn_real" ]]; then
-    cp "$0" "$MNODE_PATH"
-    chmod +x "$MNODE_PATH"
-    info "mnode 脚本已同步更新"
-  fi
+  register_mnode
 
   # 更新旧版 OpenBSD 安装时，把 rc.local 和带连字符的 rc.d 脚本迁移到 rcctl。
   if is_openbsd; then
