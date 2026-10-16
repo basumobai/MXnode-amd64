@@ -12,6 +12,22 @@ bash <(curl -fsSL https://raw.githubusercontent.com/basumobai/moudu-X-used/main/
 
 如果当前不是 root，先执行 `sudo -i`，再运行上面的命令。
 
+**仓库改为 Private 后，上一条匿名 `raw.githubusercontent.com` 命令将失效。** 使用以下认证入口进行首次安装或更新。请为两个仓库配置 GitHub Fine-grained PAT：仅选择 `moudu-X-used`、`MXnode-amd64`，权限只开 `Contents: Read-only`；令牌须保存在服务器而非仓库。
+
+```bash
+# root SSH 会话中执行；read 输入不回显，也不会写入 shell 历史
+read -rsp 'GitHub 只读 Token: ' GITHUB_TOKEN; echo
+export GITHUB_TOKEN
+bash <(curl -fsSL --proto '=https' --proto-redir '=https' \
+  --config <(printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN") \
+  -H 'Accept: application/vnd.github.raw+json' \
+  'https://api.github.com/repos/basumobai/moudu-X-used/contents/install.sh?ref=main')
+unset GITHUB_TOKEN
+```
+
+`install.sh` 会对后续脚本、AMD64/ARM64 二进制执行同样的认证下载和原有 SHA-256 校验。令牌不会写入配置，也不会传递给节点服务；`API KEY` 是面板节点通信密钥，与 GitHub Token 完全不同。更新仍使用同一个认证入口。非交互自动更新请使用 root 可读（权限 0600）的独立凭证文件注入环境变量，不要把 Token 放进 URL、README、systemd 的公开 Environment 配置或命令行参数。凭证过期后必须轮换。
+
+
 首次安装按提示填写以下信息：
 
 | 信息 | 填写要求 |
