@@ -27,6 +27,7 @@ esac
 install_dependencies() {
   local missing=()
   command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || missing+=(downloader)
+  if [[ -n ${GITHUB_TOKEN:-} ]] && ! command -v curl >/dev/null 2>&1; then missing+=(curl); fi
   command -v sha256sum >/dev/null 2>&1 || missing+=(sha256sum)
   command -v od >/dev/null 2>&1 || missing+=(od)
   ((${#missing[@]} == 0)) && return 0
@@ -56,7 +57,7 @@ download_verified() {
     local api_url="https://api.github.com/repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/contents/${BASH_REMATCH[4]}?ref=${BASH_REMATCH[3]}"
     command -v curl >/dev/null 2>&1 || die "私有仓库下载需要 curl"
     curl -fL --retry 3 --connect-timeout 15 --proto '=https' --proto-redir '=https' \
-      --config <(printf 'header = "Authorization: Bearer %s"\\n' "$GITHUB_TOKEN") \
+      --config <(printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN") \
       -H 'Accept: application/vnd.github.raw+json' "$api_url" -o "$output" ||
       die "认证下载失败，请检查令牌的 Contents: Read 权限"
   elif command -v curl >/dev/null 2>&1; then
