@@ -48,7 +48,18 @@ install_dependencies() {
 
 download_verified() {
   local url="$1" output="$2" expected="$3" actual
-  if command -v curl >/dev/null 2>&1; then
+  if [[ -n ${GITHUB_TOKEN:-} ]]; then
+    # Private repositories require an authenticated GitHub Contents API request.
+    # Keep the token out of command-line arguments, URLs and error messages.
+    [[ "$url" =~ ^https://raw[.]githubusercontent[.]com/([^/]+)/([^/]+)/([^/]+)/(.+)$ ]] ||
+      die "私有仓库下载地址格式不正确"
+    local api_url="https://api.github.com/repos/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/contents/${BASH_REMATCH[4]}?ref=${BASH_REMATCH[3]}"
+    command -v curl >/dev/null 2>&1 || die "私有仓库下载需要 curl"
+    curl -fL --retry 3 --connect-timeout 15 --proto '=https' --proto-redir '=https' \
+      --config <(printf 'header = "Authorization: Bearer %s"\\n' "$GITHUB_TOKEN") \
+      -H 'Accept: application/vnd.github.raw+json' "$api_url" -o "$output" ||
+      die "认证下载失败，请检查令牌的 Contents: Read 权限"
+  elif command -v curl >/dev/null 2>&1; then
     curl -fL --retry 3 --connect-timeout 15 "$url" -o "$output"
   elif command -v wget >/dev/null 2>&1; then
     wget --tries=3 --timeout=15 -O "$output" "$url"
